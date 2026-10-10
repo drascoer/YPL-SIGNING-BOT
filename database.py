@@ -298,4 +298,3 @@ def can_manage_team(member, team_id: int) -> bool:
         role_ids.add(row["role_id"])
 
     return any(role.id in role_ids for role in member.roles)
-
