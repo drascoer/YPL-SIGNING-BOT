@@ -1,3 +1,4 @@
+import os
 import discord
 from discord import app_commands
 
@@ -17,6 +18,8 @@ from database import (
     transfer_player,
 )
 
+LOG_CHANNEL_ID = 1464578481575825472
+
 
 class YPLSigningBot(discord.Client):
     def __init__(self, *, intents: discord.Intents):
@@ -33,6 +36,7 @@ class YPLSigningBot(discord.Client):
 
 
 intents = discord.Intents.default()
+intents.guilds = True
 intents.members = True
 intents.message_content = True
 
@@ -42,11 +46,45 @@ client = YPLSigningBot(intents=intents)
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user} ({client.user.id})")
-    print("Ready to manage YPL roster operations.")
+    print("YPL signing bot is online and ready.")
 
 
 async def send_error(interaction: discord.Interaction, message: str):
-    await interaction.response.send_message(message, ephemeral=True)
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+async def log_to_channel(guild: discord.Guild, message: str, embed: discord.Embed = None):
+    """Send a log message to the designated log channel."""
+    try:
+        channel = guild.get_channel(LOG_CHANNEL_ID)
+        if channel and isinstance(channel, discord.TextChannel):
+            if embed:
+                await channel.send(message, embed=embed)
+            else:
+                await channel.send(message)
+    except Exception as e:
+        print(f"Failed to log to channel: {e}")
+
+
+@client.tree.command(name="help", description="Show all YPL bot commands")
+async def help_command(interaction: discord.Interaction):
+    commands = [
+        "/teams — list all teams",
+        "/roster <team> — show team roster",
+        "/addteam <name> <role> — create a team (ADMIN)",
+        "/removeteam <team> — remove a team (ADMIN)",
+        "/sign <team> <player> <salary> — sign a player",
+        "/release <team> <player> — release a player",
+        "/transfer <team> <player> <target_team> — move a player",
+        "/addbudget <team> <amount> — add team budget (ADMIN)",
+        "/addmanager <team> <role> — assign manager role (ADMIN)",
+    ]
+    embed = discord.Embed(title="YPL Signing Bot Help", color=discord.Color.gold())
+    embed.add_field(name="Commands", value="\n".join(commands), inline=False)
+    await interaction.response.send_message(embed=embed)
 
 
 @client.tree.command(name="teams", description="List all teams in the league")
@@ -56,9 +94,11 @@ async def teams(interaction: discord.Interaction):
         await interaction.response.send_message("No teams have been created yet.")
         return
 
+    total_budget = sum(row["budget"] for row in rows)
     team_names = [f"- {row['name']} (${row['budget']})" for row in rows]
     embed = discord.Embed(title="League Teams", color=discord.Color.green())
     embed.add_field(name="Teams", value="\n".join(team_names), inline=False)
+    embed.set_footer(text=f"Total league budget: ${total_budget}")
     await interaction.response.send_message(embed=embed)
 
 
@@ -89,12 +129,26 @@ async def addteam(interaction: discord.Interaction, name: str, role: discord.Rol
         await send_error(interaction, "Only admins can create teams.")
         return
 
-    if get_team_by_name(interaction.guild_id, name):
-        await send_error(interaction, f"Team '{name}' already exists.")
+    clean_name = name.strip()
+    if not clean_name:
+        await send_error(interaction, "Team name cannot be empty.")
         return
 
-    add_team(interaction.guild_id, name, role.id)
-    await interaction.response.send_message(f"Team '{name}' created and assigned to role {role.mention}.")
+    if get_team_by_name(interaction.guild_id, clean_name):
+        await send_error(interaction, f"Team '{clean_name}' already exists.")
+        return
+
+    add_team(interaction.guild_id, clean_name, role.id)
+    
+    embed = discord.Embed(
+        title="Team Created",
+        description=f"Team '{clean_name}' has been created and assigned to role {role.mention}.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Created by {interaction.user.name}")
+    
+    await interaction.response.send_message(f"Team '{clean_name}' created and assigned to role {role.mention}.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="removeteam", description="Remove a team and all its player records")
@@ -109,7 +163,15 @@ async def removeteam(interaction: discord.Interaction, team: str):
         await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
+    embed = discord.Embed(
+        title="Team Removed",
+        description=f"Team '{team}' and all roster records have been removed.",
+        color=discord.Color.red()
+    )
+    embed.set_footer(text=f"Removed by {interaction.user.name}")
+    
     await interaction.response.send_message(f"Team '{team}' and all roster records were removed.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="sign", description="Sign a player to a team")
@@ -124,8 +186,8 @@ async def sign(interaction: discord.Interaction, team: str, player: str, salary:
         await send_error(interaction, "You do not have permission to sign players for this team.")
         return
 
-    if salary < 0:
-        await send_error(interaction, "Salary cannot be negative.")
+    if salary <= 0:
+        await send_error(interaction, "Salary must be greater than zero.")
         return
 
     result = sign_player(interaction.guild_id, player, team, salary)
@@ -133,7 +195,15 @@ async def sign(interaction: discord.Interaction, team: str, player: str, salary:
         await send_error(interaction, f"{team} does not have enough budget for a ${salary} signing.")
         return
 
+    embed = discord.Embed(
+        title="Player Signed",
+        description=f"{player} has been signed to {team} for ${salary}.",
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=f"Signed by {interaction.user.name}")
+    
     await interaction.response.send_message(f"{player} has been signed to {team} for ${salary}.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="release", description="Release a player from a team")
@@ -153,7 +223,15 @@ async def release(interaction: discord.Interaction, team: str, player: str):
         await send_error(interaction, f"Player '{player}' was not found on {team}.")
         return
 
+    embed = discord.Embed(
+        title="Player Released",
+        description=f"{player} has been released from {team}.",
+        color=discord.Color.orange()
+    )
+    embed.set_footer(text=f"Released by {interaction.user.name}")
+    
     await interaction.response.send_message(f"{player} has been released from {team}.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="transfer", description="Transfer a player from one team to another")
@@ -178,23 +256,31 @@ async def transfer(interaction: discord.Interaction, team: str, player: str, tar
         await send_error(interaction, f"Player '{player}' was not found on {team}.")
         return
 
+    embed = discord.Embed(
+        title="Player Transferred",
+        description=f"{player} has been transferred from {team} to {target_team}.",
+        color=discord.Color.purple()
+    )
+    embed.set_footer(text=f"Transferred by {interaction.user.name}")
+    
     await interaction.response.send_message(f"{player} has been transferred from {team} to {target_team}.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="addbudget", description="Add budget to a team")
 @app_commands.describe(team="Team name", amount="Cash to add")
 async def addbudget(interaction: discord.Interaction, team: str, amount: int):
+    if not interaction.user.guild_permissions.administrator:
+        await send_error(interaction, "Only admins can add budget to teams.")
+        return
+
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
         await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
-    if not can_manage_team(interaction.user, team_row["id"]):
-        await send_error(interaction, "You do not have permission to edit this team's budget.")
-        return
-
-    if amount < 0:
-        await send_error(interaction, "Budget amount cannot be negative.")
+    if amount <= 0:
+        await send_error(interaction, "Budget increase must be greater than zero.")
         return
 
     updated_team = add_budget(interaction.guild_id, team, amount)
@@ -202,7 +288,15 @@ async def addbudget(interaction: discord.Interaction, team: str, amount: int):
         await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
+    embed = discord.Embed(
+        title="Budget Added",
+        description=f"${amount} has been added to {team}. New budget: ${updated_team['budget']}.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Added by {interaction.user.name}")
+    
     await interaction.response.send_message(f"Added ${amount} to {team}. New budget: ${updated_team['budget']}.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="addmanager", description="Grant a Discord role access to manage a team")
@@ -218,7 +312,16 @@ async def addmanager(interaction: discord.Interaction, team: str, role: discord.
         return
 
     add_manager_role(interaction.guild_id, team, role.id)
+    
+    embed = discord.Embed(
+        title="Manager Role Added",
+        description=f"Role {role.mention} has been added as a manager for {team}.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Added by {interaction.user.name}")
+    
     await interaction.response.send_message(f"Role {role.mention} was added as a manager for {team}.")
+    await log_to_channel(interaction.guild, "", embed)
 
 
 if __name__ == "__main__":
