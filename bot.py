@@ -9,8 +9,8 @@ from database import (
     add_budget,
     add_team,
     get_all_command_statuses,
-    get_team_by_name,
     get_command_status,
+    get_team_by_name,
     init_db,
     list_players_for_team,
     list_teams,
@@ -36,9 +36,9 @@ COMMAND_NAMES = [
     "release",
     "transfer",
     "addbudget",
+    "dashboard",
     "turnoncommand",
     "turnoffcommand",
-    "dashboard",
     "togglecommand",
 ]
 
@@ -137,6 +137,7 @@ async def help_command(interaction: discord.Interaction):
         "/dashboard — view command status (ADMIN)",
         "/turnoncommand <command> — enable a command (ADMIN)",
         "/turnoffcommand <command> — disable a command (ADMIN)",
+        "/togglecommand <command> <true|false> — toggle command (ADMIN)",
     ]
     embed = discord.Embed(title="YPL Signing Bot Help", color=discord.Color.gold())
     embed.add_field(name="Commands", value="\n".join(commands), inline=False)
@@ -204,8 +205,8 @@ async def turnoffcommand(interaction: discord.Interaction, command: str):
     await interaction.response.send_message(f"/{normalized} has been disabled.")
 
 
-@client.tree.command(name="togglecommand", description="Toggle command status (ADMIN)")
-@app_commands.describe(command="Command to toggle", enabled="On or off")
+@client.tree.command(name="togglecommand", description="Toggle a command on or off (ADMIN)")
+@app_commands.describe(command="Command to toggle", enabled="Turn it on or off")
 async def togglecommand(interaction: discord.Interaction, command: str, enabled: bool):
     if not interaction.user.guild_permissions.administrator:
         await send_error(interaction, "Only admins can toggle commands.")
