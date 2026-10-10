@@ -1,5 +1,7 @@
 import os
+import threading
 import discord
+from flask import Flask
 from discord import app_commands
 
 import config
@@ -19,6 +21,18 @@ from database import (
 )
 
 LOG_CHANNEL_ID = 1464578481575825472
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def healthcheck():
+    return {"status": "ok", "service": "YPL Signing Bot"}, 200
+
+
+def run_flask():
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 class YPLSigningBot(discord.Client):
@@ -139,14 +153,14 @@ async def addteam(interaction: discord.Interaction, name: str, role: discord.Rol
         return
 
     add_team(interaction.guild_id, clean_name, role.id)
-    
+
     embed = discord.Embed(
         title="Team Created",
         description=f"Team '{clean_name}' has been created and assigned to role {role.mention}.",
-        color=discord.Color.green()
+        color=discord.Color.green(),
     )
     embed.set_footer(text=f"Created by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"Team '{clean_name}' created and assigned to role {role.mention}.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -166,10 +180,10 @@ async def removeteam(interaction: discord.Interaction, team: str):
     embed = discord.Embed(
         title="Team Removed",
         description=f"Team '{team}' and all roster records have been removed.",
-        color=discord.Color.red()
+        color=discord.Color.red(),
     )
     embed.set_footer(text=f"Removed by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"Team '{team}' and all roster records were removed.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -187,13 +201,11 @@ async def sign(interaction: discord.Interaction, team: str, user: discord.User):
         return
 
     player_name = user.name
-    # Sign with 0 salary for sign/release (no budget cost)
     result = sign_player(interaction.guild_id, player_name, team, 0)
     if result == "insufficient_budget":
         await send_error(interaction, f"{team} does not have enough budget for the signing.")
         return
 
-    # Try to add the team role to the user
     try:
         guild = interaction.guild
         member = await guild.fetch_member(user.id)
@@ -207,10 +219,10 @@ async def sign(interaction: discord.Interaction, team: str, user: discord.User):
     embed = discord.Embed(
         title="Player Signed",
         description=f"{user.mention} has been signed to {team}.",
-        color=discord.Color.blue()
+        color=discord.Color.blue(),
     )
     embed.set_footer(text=f"Signed by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"{user.mention} has been signed to {team}.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -233,7 +245,6 @@ async def release(interaction: discord.Interaction, team: str, user: discord.Use
         await send_error(interaction, f"{user.mention} was not found on {team}.")
         return
 
-    # Try to remove the team role from the user
     try:
         guild = interaction.guild
         member = await guild.fetch_member(user.id)
@@ -247,10 +258,10 @@ async def release(interaction: discord.Interaction, team: str, user: discord.Use
     embed = discord.Embed(
         title="Player Released",
         description=f"{user.mention} has been released from {team}.",
-        color=discord.Color.orange()
+        color=discord.Color.orange(),
     )
     embed.set_footer(text=f"Released by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"{user.mention} has been released from {team}.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -272,7 +283,6 @@ async def transfer(interaction: discord.Interaction, team: str, user: discord.Us
         await send_error(interaction, "You do not have permission to transfer players from this team.")
         return
 
-    # Check if target team has budget for transfer
     if target_row["budget"] < 1:
         await send_error(interaction, f"{target_team} does not have enough budget for the transfer.")
         return
@@ -283,10 +293,8 @@ async def transfer(interaction: discord.Interaction, team: str, user: discord.Us
         await send_error(interaction, f"{user.mention} was not found on {team}.")
         return
 
-    # Deduct 1 budget from target team for the transfer
     add_budget(interaction.guild_id, target_team, -1)
 
-    # Try to update roles
     try:
         guild = interaction.guild
         member = await guild.fetch_member(user.id)
@@ -304,10 +312,10 @@ async def transfer(interaction: discord.Interaction, team: str, user: discord.Us
     embed = discord.Embed(
         title="Player Transferred",
         description=f"{user.mention} has been transferred from {team} to {target_team}.",
-        color=discord.Color.purple()
+        color=discord.Color.purple(),
     )
     embed.set_footer(text=f"Transferred by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"{user.mention} has been transferred from {team} to {target_team}.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -336,10 +344,10 @@ async def addbudget(interaction: discord.Interaction, team: str, amount: int):
     embed = discord.Embed(
         title="Budget Added",
         description=f"${amount} has been added to {team}. New budget: ${updated_team['budget']}.",
-        color=discord.Color.green()
+        color=discord.Color.green(),
     )
     embed.set_footer(text=f"Added by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"Added ${amount} to {team}. New budget: ${updated_team['budget']}.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -357,14 +365,14 @@ async def addmanager(interaction: discord.Interaction, team: str, role: discord.
         return
 
     add_manager_role(interaction.guild_id, team, role.id)
-    
+
     embed = discord.Embed(
         title="Manager Role Added",
         description=f"Role {role.mention} has been added as a manager for {team}.",
-        color=discord.Color.green()
+        color=discord.Color.green(),
     )
     embed.set_footer(text=f"Added by {interaction.user.name}")
-    
+
     await interaction.response.send_message(f"Role {role.mention} was added as a manager for {team}.")
     await log_to_channel(interaction.guild, "", embed)
 
@@ -373,4 +381,9 @@ if __name__ == "__main__":
     init_db()
     if not config.DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env file.")
+    
+    # Start Flask on port in background thread
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # Start Discord bot
     client.run(config.DISCORD_TOKEN)
