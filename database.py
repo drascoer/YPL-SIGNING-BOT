@@ -54,6 +54,56 @@ def init_db() -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                command_name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(guild_id, command_name)
+            )
+            """
+        )
+
+
+def get_command_status(guild_id: int, command_name: str) -> bool:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT enabled FROM guild_settings WHERE guild_id = ? AND command_name = ?",
+            (guild_id, command_name.lower()),
+        ).fetchone()
+        if row is None:
+            return True
+        return bool(row["enabled"])
+
+
+def set_command_enabled(guild_id: int, command_name: str, enabled: bool) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO guild_settings (guild_id, command_name, enabled)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, command_name)
+            DO UPDATE SET enabled = excluded.enabled
+            """,
+            (guild_id, command_name.lower(), 1 if enabled else 0),
+        )
+        conn.commit()
+
+
+def get_all_command_statuses(guild_id: int):
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT command_name, enabled FROM guild_settings WHERE guild_id = ? ORDER BY command_name ASC",
+            (guild_id,),
+        ).fetchall()
+
+    result = {}
+    for row in rows:
+        result[row["command_name"]] = bool(row["enabled"])
+    return result
+
 
 def get_team_by_name(guild_id: int, team_name: str):
     with get_connection() as conn:
@@ -248,3 +298,4 @@ def can_manage_team(member, team_id: int) -> bool:
         role_ids.add(row["role_id"])
 
     return any(role.id in role_ids for role in member.roles)
+
