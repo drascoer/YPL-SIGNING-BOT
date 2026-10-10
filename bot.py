@@ -21,6 +21,7 @@ from database import (
 )
 
 LOG_CHANNEL_ID = 1464578481575825472
+MANAGER_ROLE_ID = 1464578480237707327
 
 app = Flask(__name__)
 
@@ -33,6 +34,13 @@ def healthcheck():
 def run_flask():
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+
+def has_manager_role(member) -> bool:
+    """Check if member has the manager role or is an admin."""
+    if member.guild_permissions.administrator:
+        return True
+    return any(role.id == MANAGER_ROLE_ID for role in member.roles)
 
 
 class YPLSigningBot(discord.Client):
@@ -90,11 +98,10 @@ async def help_command(interaction: discord.Interaction):
         "/roster <team> — show team roster",
         "/addteam <name> <role> — create a team (ADMIN)",
         "/removeteam <team> — remove a team (ADMIN)",
-        "/sign <team> <user> — sign a player to team",
-        "/release <team> <user> — release a player from team",
-        "/transfer <team> <user> <target_team> — move a player (costs 1 budget)",
+        "/sign <team> <user> — sign a player to team (MANAGER)",
+        "/release <team> <user> — release a player from team (MANAGER)",
+        "/transfer <team> <user> <target_team> — move a player (MANAGER, costs 1 budget)",
         "/addbudget <team> <amount> — add team budget (ADMIN)",
-        "/addmanager <team> <role> — assign manager role (ADMIN)",
     ]
     embed = discord.Embed(title="YPL Signing Bot Help", color=discord.Color.gold())
     embed.add_field(name="Commands", value="\n".join(commands), inline=False)
@@ -191,13 +198,13 @@ async def removeteam(interaction: discord.Interaction, team: str):
 @client.tree.command(name="sign", description="Sign a player to a team")
 @app_commands.describe(team="Team to sign the player to", user="Discord user to sign")
 async def sign(interaction: discord.Interaction, team: str, user: discord.User):
+    if not has_manager_role(interaction.user):
+        await send_error(interaction, "You do not have permission to use this command.")
+        return
+
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
         await send_error(interaction, f"Team '{team}' does not exist.")
-        return
-
-    if not can_manage_team(interaction.user, team_row["id"]):
-        await send_error(interaction, "You do not have permission to sign players for this team.")
         return
 
     player_name = user.name
@@ -230,13 +237,13 @@ async def sign(interaction: discord.Interaction, team: str, user: discord.User):
 @client.tree.command(name="release", description="Release a player from a team")
 @app_commands.describe(team="Team the player is on", user="Discord user to release")
 async def release(interaction: discord.Interaction, team: str, user: discord.User):
+    if not has_manager_role(interaction.user):
+        await send_error(interaction, "You do not have permission to use this command.")
+        return
+
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
         await send_error(interaction, f"Team '{team}' does not exist.")
-        return
-
-    if not can_manage_team(interaction.user, team_row["id"]):
-        await send_error(interaction, "You do not have permission to release players for this team.")
         return
 
     player_name = user.name
@@ -269,6 +276,10 @@ async def release(interaction: discord.Interaction, team: str, user: discord.Use
 @client.tree.command(name="transfer", description="Transfer a player from one team to another (costs 1 budget)")
 @app_commands.describe(team="Current team", user="Discord user to transfer", target_team="Destination team")
 async def transfer(interaction: discord.Interaction, team: str, user: discord.User, target_team: str):
+    if not has_manager_role(interaction.user):
+        await send_error(interaction, "You do not have permission to use this command.")
+        return
+
     source_team = get_team_by_name(interaction.guild_id, team)
     if not source_team:
         await send_error(interaction, f"Team '{team}' does not exist.")
@@ -277,10 +288,6 @@ async def transfer(interaction: discord.Interaction, team: str, user: discord.Us
     target_row = get_team_by_name(interaction.guild_id, target_team)
     if not target_row:
         await send_error(interaction, f"Target team '{target_team}' does not exist.")
-        return
-
-    if not can_manage_team(interaction.user, source_team["id"]):
-        await send_error(interaction, "You do not have permission to transfer players from this team.")
         return
 
     if target_row["budget"] < 1:
@@ -352,38 +359,13 @@ async def addbudget(interaction: discord.Interaction, team: str, amount: int):
     await log_to_channel(interaction.guild, "", embed)
 
 
-@client.tree.command(name="addmanager", description="Grant a Discord role access to manage a team")
-@app_commands.describe(team="Team name", role="Role that should be allowed to sign and release")
-async def addmanager(interaction: discord.Interaction, team: str, role: discord.Role):
-    if not interaction.user.guild_permissions.administrator:
-        await send_error(interaction, "Only admins can assign team managers.")
-        return
-
-    team_row = get_team_by_name(interaction.guild_id, team)
-    if not team_row:
-        await send_error(interaction, f"Team '{team}' does not exist.")
-        return
-
-    add_manager_role(interaction.guild_id, team, role.id)
-
-    embed = discord.Embed(
-        title="Manager Role Added",
-        description=f"Role {role.mention} has been added as a manager for {team}.",
-        color=discord.Color.green(),
-    )
-    embed.set_footer(text=f"Added by {interaction.user.name}")
-
-    await interaction.response.send_message(f"Role {role.mention} was added as a manager for {team}.")
-    await log_to_channel(interaction.guild, "", embed)
-
-
 if __name__ == "__main__":
     init_db()
     if not config.DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env file.")
-    
+
     # Start Flask on port in background thread
     threading.Thread(target=run_flask, daemon=True).start()
-    
+
     # Start Discord bot
     client.run(config.DISCORD_TOKEN)
