@@ -7,15 +7,16 @@ from discord import app_commands
 import config
 from database import (
     add_budget,
-    add_manager_role,
     add_team,
-    can_manage_team,
+    get_all_command_statuses,
     get_team_by_name,
+    get_command_status,
     init_db,
     list_players_for_team,
     list_teams,
     release_player,
     remove_team,
+    set_command_enabled,
     sign_player,
     transfer_player,
 )
@@ -24,6 +25,22 @@ LOG_CHANNEL_ID = 1464578481575825472
 MANAGER_ROLE_ID = 1464578480237707327
 
 app = Flask(__name__)
+
+COMMAND_NAMES = [
+    "help",
+    "teams",
+    "roster",
+    "addteam",
+    "removeteam",
+    "sign",
+    "release",
+    "transfer",
+    "addbudget",
+    "turnoncommand",
+    "turnoffcommand",
+    "dashboard",
+    "togglecommand",
+]
 
 
 @app.route("/")
@@ -37,10 +54,23 @@ def run_flask():
 
 
 def has_manager_role(member) -> bool:
-    """Check if member has the manager role or is an admin."""
     if member.guild_permissions.administrator:
         return True
     return any(role.id == MANAGER_ROLE_ID for role in member.roles)
+
+
+async def ensure_command_enabled(interaction: discord.Interaction, command_name: str):
+    if command_name in {"turnoncommand", "turnoffcommand", "togglecommand", "dashboard"}:
+        return True
+
+    if interaction.user.guild_permissions.administrator:
+        return True
+
+    if not get_command_status(interaction.guild_id, command_name):
+        await send_error(interaction, f"/{command_name} is currently disabled by an admin.")
+        return False
+
+    return True
 
 
 class YPLSigningBot(discord.Client):
@@ -79,7 +109,6 @@ async def send_error(interaction: discord.Interaction, message: str):
 
 
 async def log_to_channel(guild: discord.Guild, message: str, embed: discord.Embed = None):
-    """Send a log message to the designated log channel."""
     try:
         channel = guild.get_channel(LOG_CHANNEL_ID)
         if channel and isinstance(channel, discord.TextChannel):
@@ -93,6 +122,9 @@ async def log_to_channel(guild: discord.Guild, message: str, embed: discord.Embe
 
 @client.tree.command(name="help", description="Show all YPL bot commands")
 async def help_command(interaction: discord.Interaction):
+    if not await ensure_command_enabled(interaction, "help"):
+        return
+
     commands = [
         "/teams — list all teams",
         "/roster <team> — show team roster",
@@ -102,14 +134,103 @@ async def help_command(interaction: discord.Interaction):
         "/release <team> <user> — release a player from team (MANAGER)",
         "/transfer <team> <user> <target_team> — move a player (MANAGER, costs 1 budget)",
         "/addbudget <team> <amount> — add team budget (ADMIN)",
+        "/dashboard — view command status (ADMIN)",
+        "/turnoncommand <command> — enable a command (ADMIN)",
+        "/turnoffcommand <command> — disable a command (ADMIN)",
     ]
     embed = discord.Embed(title="YPL Signing Bot Help", color=discord.Color.gold())
     embed.add_field(name="Commands", value="\n".join(commands), inline=False)
     await interaction.response.send_message(embed=embed)
 
 
+@client.tree.command(name="dashboard", description="View whether commands are enabled or disabled")
+async def dashboard(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await send_error(interaction, "Only admins can view the dashboard.")
+        return
+
+    statuses = get_all_command_statuses(interaction.guild_id)
+    lines = []
+    for command in COMMAND_NAMES:
+        enabled = statuses.get(command, True)
+        lines.append(f"- {command}: {'ON' if enabled else 'OFF'}")
+
+    embed = discord.Embed(title="Command Dashboard", color=discord.Color.purple())
+    embed.add_field(name="Status", value="\n".join(lines), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@client.tree.command(name="turnoncommand", description="Turn a command back on (ADMIN)")
+@app_commands.describe(command="Command to enable")
+async def turnoncommand(interaction: discord.Interaction, command: str):
+    if not interaction.user.guild_permissions.administrator:
+        await send_error(interaction, "Only admins can toggle commands.")
+        return
+
+    normalized = command.lower().strip()
+    if normalized == "all":
+        for name in COMMAND_NAMES:
+            set_command_enabled(interaction.guild_id, name, True)
+        await interaction.response.send_message("All commands have been turned on.")
+        return
+
+    if normalized not in COMMAND_NAMES:
+        await send_error(interaction, f"Unknown command '{command}'.")
+        return
+
+    set_command_enabled(interaction.guild_id, normalized, True)
+    await interaction.response.send_message(f"/{normalized} has been enabled.")
+
+
+@client.tree.command(name="turnoffcommand", description="Turn a command off (ADMIN)")
+@app_commands.describe(command="Command to disable")
+async def turnoffcommand(interaction: discord.Interaction, command: str):
+    if not interaction.user.guild_permissions.administrator:
+        await send_error(interaction, "Only admins can toggle commands.")
+        return
+
+    normalized = command.lower().strip()
+    if normalized == "all":
+        for name in COMMAND_NAMES:
+            set_command_enabled(interaction.guild_id, name, False)
+        await interaction.response.send_message("All commands have been turned off.")
+        return
+
+    if normalized not in COMMAND_NAMES:
+        await send_error(interaction, f"Unknown command '{command}'.")
+        return
+
+    set_command_enabled(interaction.guild_id, normalized, False)
+    await interaction.response.send_message(f"/{normalized} has been disabled.")
+
+
+@client.tree.command(name="togglecommand", description="Toggle command status (ADMIN)")
+@app_commands.describe(command="Command to toggle", enabled="On or off")
+async def togglecommand(interaction: discord.Interaction, command: str, enabled: bool):
+    if not interaction.user.guild_permissions.administrator:
+        await send_error(interaction, "Only admins can toggle commands.")
+        return
+
+    normalized = command.lower().strip()
+    if normalized == "all":
+        for name in COMMAND_NAMES:
+            set_command_enabled(interaction.guild_id, name, enabled)
+        await interaction.response.send_message(f"All commands have been set to {'ON' if enabled else 'OFF'}.")
+        return
+
+    if normalized not in COMMAND_NAMES:
+        await send_error(interaction, f"Unknown command '{command}'.")
+        return
+
+    set_command_enabled(interaction.guild_id, normalized, enabled)
+    await interaction.response.send_message(f"/{normalized} has been set to {'ON' if enabled else 'OFF'}.")
+
+
 @client.tree.command(name="teams", description="List all teams in the league")
 async def teams(interaction: discord.Interaction):
+    if not await ensure_command_enabled(interaction, "teams"):
+        return
+
     rows = list_teams(interaction.guild_id)
     if not rows:
         await interaction.response.send_message("No teams have been created yet.")
@@ -126,6 +247,9 @@ async def teams(interaction: discord.Interaction):
 @client.tree.command(name="roster", description="Show the roster for a team")
 @app_commands.describe(team="The name of the team")
 async def roster(interaction: discord.Interaction, team: str):
+    if not await ensure_command_enabled(interaction, "roster"):
+        return
+
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
         await send_error(interaction, f"Team '{team}' does not exist.")
@@ -146,6 +270,9 @@ async def roster(interaction: discord.Interaction, team: str):
 @client.tree.command(name="addteam", description="Create a team and attach a team role")
 @app_commands.describe(name="The team name", role="The Discord role assigned to the team")
 async def addteam(interaction: discord.Interaction, name: str, role: discord.Role):
+    if not await ensure_command_enabled(interaction, "addteam"):
+        return
+
     if not interaction.user.guild_permissions.administrator:
         await send_error(interaction, "Only admins can create teams.")
         return
@@ -175,6 +302,9 @@ async def addteam(interaction: discord.Interaction, name: str, role: discord.Rol
 @client.tree.command(name="removeteam", description="Remove a team and all its player records")
 @app_commands.describe(team="Team to remove")
 async def removeteam(interaction: discord.Interaction, team: str):
+    if not await ensure_command_enabled(interaction, "removeteam"):
+        return
+
     if not interaction.user.guild_permissions.administrator:
         await send_error(interaction, "Only admins can remove teams.")
         return
@@ -198,6 +328,9 @@ async def removeteam(interaction: discord.Interaction, team: str):
 @client.tree.command(name="sign", description="Sign a player to a team")
 @app_commands.describe(team="Team to sign the player to", user="Discord user to sign")
 async def sign(interaction: discord.Interaction, team: str, user: discord.User):
+    if not await ensure_command_enabled(interaction, "sign"):
+        return
+
     if not has_manager_role(interaction.user):
         await send_error(interaction, "You do not have permission to use this command.")
         return
@@ -237,6 +370,9 @@ async def sign(interaction: discord.Interaction, team: str, user: discord.User):
 @client.tree.command(name="release", description="Release a player from a team")
 @app_commands.describe(team="Team the player is on", user="Discord user to release")
 async def release(interaction: discord.Interaction, team: str, user: discord.User):
+    if not await ensure_command_enabled(interaction, "release"):
+        return
+
     if not has_manager_role(interaction.user):
         await send_error(interaction, "You do not have permission to use this command.")
         return
@@ -276,6 +412,9 @@ async def release(interaction: discord.Interaction, team: str, user: discord.Use
 @client.tree.command(name="transfer", description="Transfer a player from one team to another (costs 1 budget)")
 @app_commands.describe(team="Current team", user="Discord user to transfer", target_team="Destination team")
 async def transfer(interaction: discord.Interaction, team: str, user: discord.User, target_team: str):
+    if not await ensure_command_enabled(interaction, "transfer"):
+        return
+
     if not has_manager_role(interaction.user):
         await send_error(interaction, "You do not have permission to use this command.")
         return
@@ -330,6 +469,9 @@ async def transfer(interaction: discord.Interaction, team: str, user: discord.Us
 @client.tree.command(name="addbudget", description="Add budget to a team")
 @app_commands.describe(team="Team name", amount="Cash to add")
 async def addbudget(interaction: discord.Interaction, team: str, amount: int):
+    if not await ensure_command_enabled(interaction, "addbudget"):
+        return
+
     if not interaction.user.guild_permissions.administrator:
         await send_error(interaction, "Only admins can add budget to teams.")
         return
@@ -364,8 +506,5 @@ if __name__ == "__main__":
     if not config.DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env file.")
 
-    # Start Flask on port in background thread
     threading.Thread(target=run_flask, daemon=True).start()
-
-    # Start Discord bot
     client.run(config.DISCORD_TOKEN)
