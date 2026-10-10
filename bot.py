@@ -45,12 +45,29 @@ async def on_ready():
     print("Ready to manage YPL roster operations.")
 
 
+async def send_error(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(message, ephemeral=True)
+
+
+@client.tree.command(name="teams", description="List all teams in the league")
+async def teams(interaction: discord.Interaction):
+    rows = list_teams(interaction.guild_id)
+    if not rows:
+        await interaction.response.send_message("No teams have been created yet.")
+        return
+
+    team_names = [f"- {row['name']} (${row['budget']})" for row in rows]
+    embed = discord.Embed(title="League Teams", color=discord.Color.green())
+    embed.add_field(name="Teams", value="\n".join(team_names), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
 @client.tree.command(name="roster", description="Show the roster for a team")
 @app_commands.describe(team="The name of the team")
 async def roster(interaction: discord.Interaction, team: str):
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     players = list_players_for_team(interaction.guild_id, team)
@@ -69,11 +86,11 @@ async def roster(interaction: discord.Interaction, team: str):
 @app_commands.describe(name="The team name", role="The Discord role assigned to the team")
 async def addteam(interaction: discord.Interaction, name: str, role: discord.Role):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Only admins can create teams.", ephemeral=True)
+        await send_error(interaction, "Only admins can create teams.")
         return
 
     if get_team_by_name(interaction.guild_id, name):
-        await interaction.response.send_message(f"Team '{name}' already exists.", ephemeral=True)
+        await send_error(interaction, f"Team '{name}' already exists.")
         return
 
     add_team(interaction.guild_id, name, role.id)
@@ -84,12 +101,12 @@ async def addteam(interaction: discord.Interaction, name: str, role: discord.Rol
 @app_commands.describe(team="Team to remove")
 async def removeteam(interaction: discord.Interaction, team: str):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Only admins can remove teams.", ephemeral=True)
+        await send_error(interaction, "Only admins can remove teams.")
         return
 
     removed = remove_team(interaction.guild_id, team)
     if not removed:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     await interaction.response.send_message(f"Team '{team}' and all roster records were removed.")
@@ -100,20 +117,20 @@ async def removeteam(interaction: discord.Interaction, team: str):
 async def sign(interaction: discord.Interaction, team: str, player: str, salary: int):
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     if not can_manage_team(interaction.user, team_row["id"]):
-        await interaction.response.send_message("You do not have permission to sign players for this team.", ephemeral=True)
+        await send_error(interaction, "You do not have permission to sign players for this team.")
         return
 
     if salary < 0:
-        await interaction.response.send_message("Salary cannot be negative.", ephemeral=True)
+        await send_error(interaction, "Salary cannot be negative.")
         return
 
     result = sign_player(interaction.guild_id, player, team, salary)
     if result == "insufficient_budget":
-        await interaction.response.send_message(f"{team} does not have enough budget for a ${salary} signing.", ephemeral=True)
+        await send_error(interaction, f"{team} does not have enough budget for a ${salary} signing.")
         return
 
     await interaction.response.send_message(f"{player} has been signed to {team} for ${salary}.")
@@ -124,16 +141,16 @@ async def sign(interaction: discord.Interaction, team: str, player: str, salary:
 async def release(interaction: discord.Interaction, team: str, player: str):
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     if not can_manage_team(interaction.user, team_row["id"]):
-        await interaction.response.send_message("You do not have permission to release players for this team.", ephemeral=True)
+        await send_error(interaction, "You do not have permission to release players for this team.")
         return
 
-    success = release_player(interaction.guild_id, player)
+    success = release_player(interaction.guild_id, player, team_name=team)
     if not success:
-        await interaction.response.send_message(f"Player '{player}' was not found on the server roster.", ephemeral=True)
+        await send_error(interaction, f"Player '{player}' was not found on {team}.")
         return
 
     await interaction.response.send_message(f"{player} has been released from {team}.")
@@ -144,21 +161,21 @@ async def release(interaction: discord.Interaction, team: str, player: str):
 async def transfer(interaction: discord.Interaction, team: str, player: str, target_team: str):
     source_team = get_team_by_name(interaction.guild_id, team)
     if not source_team:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     target_row = get_team_by_name(interaction.guild_id, target_team)
     if not target_row:
-        await interaction.response.send_message(f"Target team '{target_team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Target team '{target_team}' does not exist.")
         return
 
     if not can_manage_team(interaction.user, source_team["id"]):
-        await interaction.response.send_message("You do not have permission to transfer players from this team.", ephemeral=True)
+        await send_error(interaction, "You do not have permission to transfer players from this team.")
         return
 
-    success = transfer_player(interaction.guild_id, player, target_team)
+    success = transfer_player(interaction.guild_id, player, team, target_team)
     if not success:
-        await interaction.response.send_message(f"Player '{player}' was not found in the league roster.", ephemeral=True)
+        await send_error(interaction, f"Player '{player}' was not found on {team}.")
         return
 
     await interaction.response.send_message(f"{player} has been transferred from {team} to {target_team}.")
@@ -169,18 +186,22 @@ async def transfer(interaction: discord.Interaction, team: str, player: str, tar
 async def addbudget(interaction: discord.Interaction, team: str, amount: int):
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     if not can_manage_team(interaction.user, team_row["id"]):
-        await interaction.response.send_message("You do not have permission to edit this team's budget.", ephemeral=True)
+        await send_error(interaction, "You do not have permission to edit this team's budget.")
         return
 
     if amount < 0:
-        await interaction.response.send_message("Budget amount cannot be negative.", ephemeral=True)
+        await send_error(interaction, "Budget amount cannot be negative.")
         return
 
     updated_team = add_budget(interaction.guild_id, team, amount)
+    if updated_team is None:
+        await send_error(interaction, f"Team '{team}' does not exist.")
+        return
+
     await interaction.response.send_message(f"Added ${amount} to {team}. New budget: ${updated_team['budget']}.")
 
 
@@ -188,12 +209,12 @@ async def addbudget(interaction: discord.Interaction, team: str, amount: int):
 @app_commands.describe(team="Team name", role="Role that should be allowed to sign and release")
 async def addmanager(interaction: discord.Interaction, team: str, role: discord.Role):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Only admins can assign team managers.", ephemeral=True)
+        await send_error(interaction, "Only admins can assign team managers.")
         return
 
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
-        await interaction.response.send_message(f"Team '{team}' does not exist.", ephemeral=True)
+        await send_error(interaction, f"Team '{team}' does not exist.")
         return
 
     add_manager_role(interaction.guild_id, team, role.id)
@@ -205,370 +226,3 @@ if __name__ == "__main__":
     if not config.DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env file.")
     client.run(config.DISCORD_TOKEN)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
