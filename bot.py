@@ -76,9 +76,9 @@ async def help_command(interaction: discord.Interaction):
         "/roster <team> — show team roster",
         "/addteam <name> <role> — create a team (ADMIN)",
         "/removeteam <team> — remove a team (ADMIN)",
-        "/sign <team> <player> <salary> — sign a player",
-        "/release <team> <player> — release a player",
-        "/transfer <team> <player> <target_team> — move a player",
+        "/sign <team> <user> — sign a player to team",
+        "/release <team> <user> — release a player from team",
+        "/transfer <team> <user> <target_team> — move a player (costs 1 budget)",
         "/addbudget <team> <amount> — add team budget (ADMIN)",
         "/addmanager <team> <role> — assign manager role (ADMIN)",
     ]
@@ -115,7 +115,7 @@ async def roster(interaction: discord.Interaction, team: str):
         await interaction.response.send_message(f"{team} currently has no active players.")
         return
 
-    roster_lines = [f"{player['name']} - ${player['salary']}" for player in players]
+    roster_lines = [f"{player['name']}" for player in players]
     embed = discord.Embed(title=f"{team} roster", color=discord.Color.blue())
     embed.add_field(name="Players", value="\n".join(roster_lines), inline=False)
     embed.add_field(name="Budget", value=f"${team_row['budget']}", inline=False)
@@ -175,8 +175,8 @@ async def removeteam(interaction: discord.Interaction, team: str):
 
 
 @client.tree.command(name="sign", description="Sign a player to a team")
-@app_commands.describe(team="Team to sign the player to", player="Player name", salary="Contract salary")
-async def sign(interaction: discord.Interaction, team: str, player: str, salary: int):
+@app_commands.describe(team="Team to sign the player to", user="Discord user to sign")
+async def sign(interaction: discord.Interaction, team: str, user: discord.User):
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
         await send_error(interaction, f"Team '{team}' does not exist.")
@@ -186,29 +186,38 @@ async def sign(interaction: discord.Interaction, team: str, player: str, salary:
         await send_error(interaction, "You do not have permission to sign players for this team.")
         return
 
-    if salary <= 0:
-        await send_error(interaction, "Salary must be greater than zero.")
+    player_name = user.name
+    # Sign with 0 salary for sign/release (no budget cost)
+    result = sign_player(interaction.guild_id, player_name, team, 0)
+    if result == "insufficient_budget":
+        await send_error(interaction, f"{team} does not have enough budget for the signing.")
         return
 
-    result = sign_player(interaction.guild_id, player, team, salary)
-    if result == "insufficient_budget":
-        await send_error(interaction, f"{team} does not have enough budget for a ${salary} signing.")
-        return
+    # Try to add the team role to the user
+    try:
+        guild = interaction.guild
+        member = await guild.fetch_member(user.id)
+        if team_row["team_role_id"]:
+            role = guild.get_role(team_row["team_role_id"])
+            if role:
+                await member.add_roles(role)
+    except Exception as e:
+        print(f"Could not add role to member: {e}")
 
     embed = discord.Embed(
         title="Player Signed",
-        description=f"{player} has been signed to {team} for ${salary}.",
+        description=f"{user.mention} has been signed to {team}.",
         color=discord.Color.blue()
     )
     embed.set_footer(text=f"Signed by {interaction.user.name}")
     
-    await interaction.response.send_message(f"{player} has been signed to {team} for ${salary}.")
+    await interaction.response.send_message(f"{user.mention} has been signed to {team}.")
     await log_to_channel(interaction.guild, "", embed)
 
 
 @client.tree.command(name="release", description="Release a player from a team")
-@app_commands.describe(team="Team the player is on", player="Player name")
-async def release(interaction: discord.Interaction, team: str, player: str):
+@app_commands.describe(team="Team the player is on", user="Discord user to release")
+async def release(interaction: discord.Interaction, team: str, user: discord.User):
     team_row = get_team_by_name(interaction.guild_id, team)
     if not team_row:
         await send_error(interaction, f"Team '{team}' does not exist.")
@@ -218,25 +227,37 @@ async def release(interaction: discord.Interaction, team: str, player: str):
         await send_error(interaction, "You do not have permission to release players for this team.")
         return
 
-    success = release_player(interaction.guild_id, player, team_name=team)
+    player_name = user.name
+    success = release_player(interaction.guild_id, player_name, team_name=team)
     if not success:
-        await send_error(interaction, f"Player '{player}' was not found on {team}.")
+        await send_error(interaction, f"{user.mention} was not found on {team}.")
         return
+
+    # Try to remove the team role from the user
+    try:
+        guild = interaction.guild
+        member = await guild.fetch_member(user.id)
+        if team_row["team_role_id"]:
+            role = guild.get_role(team_row["team_role_id"])
+            if role:
+                await member.remove_roles(role)
+    except Exception as e:
+        print(f"Could not remove role from member: {e}")
 
     embed = discord.Embed(
         title="Player Released",
-        description=f"{player} has been released from {team}.",
+        description=f"{user.mention} has been released from {team}.",
         color=discord.Color.orange()
     )
     embed.set_footer(text=f"Released by {interaction.user.name}")
     
-    await interaction.response.send_message(f"{player} has been released from {team}.")
+    await interaction.response.send_message(f"{user.mention} has been released from {team}.")
     await log_to_channel(interaction.guild, "", embed)
 
 
-@client.tree.command(name="transfer", description="Transfer a player from one team to another")
-@app_commands.describe(team="Current team", player="Player name", target_team="Destination team")
-async def transfer(interaction: discord.Interaction, team: str, player: str, target_team: str):
+@client.tree.command(name="transfer", description="Transfer a player from one team to another (costs 1 budget)")
+@app_commands.describe(team="Current team", user="Discord user to transfer", target_team="Destination team")
+async def transfer(interaction: discord.Interaction, team: str, user: discord.User, target_team: str):
     source_team = get_team_by_name(interaction.guild_id, team)
     if not source_team:
         await send_error(interaction, f"Team '{team}' does not exist.")
@@ -251,19 +272,43 @@ async def transfer(interaction: discord.Interaction, team: str, player: str, tar
         await send_error(interaction, "You do not have permission to transfer players from this team.")
         return
 
-    success = transfer_player(interaction.guild_id, player, team, target_team)
-    if not success:
-        await send_error(interaction, f"Player '{player}' was not found on {team}.")
+    # Check if target team has budget for transfer
+    if target_row["budget"] < 1:
+        await send_error(interaction, f"{target_team} does not have enough budget for the transfer.")
         return
+
+    player_name = user.name
+    success = transfer_player(interaction.guild_id, player_name, team, target_team)
+    if not success:
+        await send_error(interaction, f"{user.mention} was not found on {team}.")
+        return
+
+    # Deduct 1 budget from target team for the transfer
+    add_budget(interaction.guild_id, target_team, -1)
+
+    # Try to update roles
+    try:
+        guild = interaction.guild
+        member = await guild.fetch_member(user.id)
+        if source_team["team_role_id"]:
+            source_role = guild.get_role(source_team["team_role_id"])
+            if source_role:
+                await member.remove_roles(source_role)
+        if target_row["team_role_id"]:
+            target_role = guild.get_role(target_row["team_role_id"])
+            if target_role:
+                await member.add_roles(target_role)
+    except Exception as e:
+        print(f"Could not update roles for member: {e}")
 
     embed = discord.Embed(
         title="Player Transferred",
-        description=f"{player} has been transferred from {team} to {target_team}.",
+        description=f"{user.mention} has been transferred from {team} to {target_team}.",
         color=discord.Color.purple()
     )
     embed.set_footer(text=f"Transferred by {interaction.user.name}")
     
-    await interaction.response.send_message(f"{player} has been transferred from {team} to {target_team}.")
+    await interaction.response.send_message(f"{user.mention} has been transferred from {team} to {target_team}.")
     await log_to_channel(interaction.guild, "", embed)
 
 
